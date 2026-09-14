@@ -27,7 +27,11 @@ const verifyRequest = (req, res, next) => {
   if (!methods.includes(req.method)) return next();
 
   // Webhooks from third-party payment gateways (Paymob, Stripe) have their own signature mechanisms
-  if (req.originalUrl?.includes('/webhook') || req.path?.includes('/webhook')) return next();
+  // Public product verification (/verify or /verify-uoo) is accessible to all customers and does not require an HMAC signature
+  if (
+    req.originalUrl?.includes('/webhook') || req.path?.includes('/webhook') ||
+    req.originalUrl?.includes('/verify') || req.path?.includes('/verify')
+  ) return next();
 
   const contentType = (req.headers['content-type'] || '').toLowerCase();
   if (contentType.includes('multipart/form-data')) return next();

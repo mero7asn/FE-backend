@@ -8,9 +8,8 @@ const clean = (value) => {
 const sanitizeObject = (obj) => {
   if (!obj || typeof obj !== 'object') return obj;
   for (const key of Object.keys(obj)) {
-    // Passwords are credentials and must be compared exactly as entered.
-    // uooNumber is a fixed-charset code (A-Z, 0-9, !@*$#) — never rendered as HTML.
-    if (key === 'password' || key === 'uooNumber') continue;
+    // uooNumber and productNumber are alphanumeric/special identifiers — never rendered as HTML.
+    if (key === 'password' || key === 'uooNumber' || key === 'uoo' || key === 'productNumber') continue;
     if (typeof obj[key] === 'string') obj[key] = clean(obj[key]);
     else if (typeof obj[key] === 'object') sanitizeObject(obj[key]);
   }

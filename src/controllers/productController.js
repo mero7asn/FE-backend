@@ -443,25 +443,69 @@ exports.restoreSoldProduct = async (req, res) => {
 
 exports.verifySoldProduct = async (req, res) => {
   try {
-    // Read from req.body (POST) — '#' chars are JSON-safe but NOT URL-safe in query strings
-    const { productNumber, uooNumber } = req.body;
-    if (!productNumber || !uooNumber) {
-      return res.status(400).json({ message: 'Product Number and UOO Number are required' });
+    const rawPn = req.body?.productNumber || req.query?.productNumber || req.body?.pNum || req.query?.pNum || '';
+    const rawUoo = req.body?.uooNumber || req.body?.uoo || req.query?.uooNumber || req.query?.uoo || '';
+
+    if (!rawPn || !rawUoo) {
+      return res.status(400).json({ verified: false, message: 'Product Number and UOO Number are required' });
     }
 
-    const pn = productNumber.trim().toUpperCase();
-    const uoo = uooNumber.trim().toUpperCase();
+    let pn = rawPn.toString().trim().toUpperCase();
+    let uoo = rawUoo.toString().trim().toUpperCase();
+    try {
+      uoo = decodeURIComponent(uoo).trim().toUpperCase();
+    } catch (e) {}
 
-    // Try exact match first, then fallback matching # stripped (for old records where # was lost in transit)
+    // 1. Direct exact match
     let sold = await SoldProduct.findOne({ productNumber: pn, uooNumber: uoo })
       .populate('product', 'images description colors name price');
 
+    // 2. Case-insensitive exact match
     if (!sold) {
-      // Find all records for this product and compare with # stripped on both sides
-      const candidates = await SoldProduct.find({ productNumber: pn, isDeleted: { $ne: true } })
-        .populate('product', 'images description colors name price');
-      const uooStripped = uoo.replace(/#/g, '');
-      sold = candidates.find(c => c.uooNumber.replace(/#/g, '') === uooStripped) || null;
+      const escapedUoo = uoo.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const escapedPn = pn.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      sold = await SoldProduct.findOne({
+        productNumber: { $regex: new RegExp(`^${escapedPn}$`, 'i') },
+        uooNumber: { $regex: new RegExp(`^${escapedUoo}$`, 'i') }
+      }).populate('product', 'images description colors name price');
+    }
+
+    // 3. Resilient fallback matching across candidates for this productNumber
+    if (!sold) {
+      const escapedPn = pn.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const candidates = await SoldProduct.find({
+        productNumber: { $regex: new RegExp(`^${escapedPn}$`, 'i') },
+        isDeleted: { $ne: true }
+      }).populate('product', 'images description colors name price');
+
+      // 3a. Match with '#' and '*' stripped (handles # encoded, dropped, or swapped with *)
+      const uooClean = uoo.replace(/[*#\s-]/g, '');
+      sold = candidates.find(c => {
+        const cClean = (c.uooNumber || '').replace(/[*#\s-]/g, '').toUpperCase();
+        return cClean === uooClean;
+      }) || null;
+
+      // 3b. Fallback: if browser/client truncated at '#' in URL, uoo is just the prefix (e.g. 'ABC' for 'ABC#1234')
+      if (!sold && uoo.length >= 2 && uoo.length < 8) {
+        const prefixMatches = candidates.filter(c => {
+          const cUoo = (c.uooNumber || '').toUpperCase();
+          return cUoo.startsWith(uoo + '#') || cUoo.startsWith(uoo + '*') || cUoo.split(/[*#]/)[0] === uoo;
+        });
+        if (prefixMatches.length === 1) {
+          sold = prefixMatches[0];
+        }
+      }
+
+      // 3c. Fallback: if uoo passed was only the suffix after '#' (e.g. '1234' for 'ABC#1234')
+      if (!sold && uoo.length >= 3 && uoo.length < 8) {
+        const suffixMatches = candidates.filter(c => {
+          const cUoo = (c.uooNumber || '').toUpperCase();
+          return cUoo.endsWith('#' + uoo) || cUoo.endsWith('*' + uoo) || cUoo.split(/[*#]/).pop() === uoo;
+        });
+        if (suffixMatches.length === 1) {
+          sold = suffixMatches[0];
+        }
+      }
     }
 
     if (!sold || sold.isDeleted) {
@@ -470,7 +514,8 @@ exports.verifySoldProduct = async (req, res) => {
 
     res.json({ verified: true, soldProduct: sold });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    console.error('Error verifying sold product:', error);
+    res.status(500).json({ verified: false, message: error.message });
   }
 };
 
